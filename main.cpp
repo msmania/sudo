@@ -2,16 +2,15 @@
 
 #include <windows.h>
 #include <tchar.h>
-#include <stdio.h>
 #include <strsafe.h>
 
 #define BUFSIZE 4096
+#define MAX_CONSOLE_BUFFER 4096
 
 HANDLE g_hChildStd_IN_Rd = NULL;
 HANDLE g_hChildStd_IN_Wr = NULL;
 HANDLE g_hChildStd_OUT_Rd = NULL;
 HANDLE g_hChildStd_OUT_Wr = NULL;
-
 HANDLE g_hInputFile = NULL;
 
 void CreateChildProcess(LPCWSTR CommandString);
@@ -19,16 +18,26 @@ void WriteToPipe(void);
 void ReadFromPipe(void);
 void ErrorExit(PTSTR);
 
-int _tmain(int argc, TCHAR *argv[])
-{
-    LPCWSTR CommandLineForChild = GetCommandLine();
-    CommandLineForChild += wcslen(argv[0]);
-    while (*CommandLineForChild == L' ')
-        ++CommandLineForChild;
+void Log(HANDLE Console, LPCWSTR Msg) {
+    size_t MsgLen = 0;
+    if (SUCCEEDED(StringCchLength(Msg, 4096, &MsgLen))) {
+        DWORD BytesWritten = 0;
+        WriteConsole(Console, Msg, (DWORD)MsgLen, &BytesWritten, nullptr);
+    }
+}
 
+void LogError(HANDLE Console, LPCWSTR Label, DWORD ErrorCode) {
+    WCHAR Msg[MAX_CONSOLE_BUFFER];
+    if (SUCCEEDED(StringCbPrintf(Msg, sizeof(Msg), L"%s failed - %08x\n", Label, ErrorCode))) {
+        Log(Console, Msg);
+    }
+}
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
    SECURITY_ATTRIBUTES saAttr;
 
-   printf("\n->Start of parent execution.\n");
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        ErrorExit(TEXT("AttachConsole"));
 
 // Set the bInheritHandle flag so pipe handles are inherited.
 
@@ -58,21 +67,17 @@ int _tmain(int argc, TCHAR *argv[])
 
 // Create the child process.
 
-   CreateChildProcess(CommandLineForChild);
+   CreateChildProcess(pCmdLine);
 
 // Write to the pipe that is the standard input for a child process.
 // Data is written to the pipe's buffers, so it is not necessary to wait
 // until the child process is running before writing data.
 
    WriteToPipe();
-   printf( "\n->Contents of %s written to child STDIN pipe.\n", argv[1]);
 
 // Read from pipe that is the standard output for child process.
 
-   printf( "\n->Contents of child process STDOUT:\n\n", argv[1]);
    ReadFromPipe();
-
-   printf("\n->End of parent execution.\n");
 
 // The remaining open handles are cleaned up when this process terminates.
 // To avoid resource leaks in a larger application, close handles explicitly.
@@ -186,34 +191,7 @@ void ReadFromPipe(void)
    }
 }
 
-void ErrorExit(PTSTR lpszFunction)
-
-// Format a readable error message, display a message box,
-// and exit from the application.
-{
-    LPVOID lpMsgBuf;
-    LPVOID lpDisplayBuf;
-    DWORD dw = GetLastError();
-
-    FormatMessage(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER |
-        FORMAT_MESSAGE_FROM_SYSTEM |
-        FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        dw,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPTSTR) &lpMsgBuf,
-        0, NULL );
-
-    lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT,
-        (lstrlen((LPCTSTR)lpMsgBuf)+lstrlen((LPCTSTR)lpszFunction)+40)*sizeof(TCHAR));
-    StringCchPrintf((LPTSTR)lpDisplayBuf,
-        LocalSize(lpDisplayBuf) / sizeof(TCHAR),
-        TEXT("%s failed with error %d: %s"),
-        lpszFunction, dw, lpMsgBuf);
-    MessageBox(NULL, (LPCTSTR)lpDisplayBuf, TEXT("Error"), MB_OK);
-
-    LocalFree(lpMsgBuf);
-    LocalFree(lpDisplayBuf);
+void ErrorExit(PTSTR lpszFunction) {
+    LogError(GetStdHandle(STD_ERROR_HANDLE), lpszFunction, GetLastError());
     ExitProcess(1);
 }

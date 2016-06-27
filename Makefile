@@ -1,7 +1,9 @@
 !IF "$(PLATFORM)"=="X64"
 OUTDIR=.\bin64
+ARCH=amd64
 !ELSE
 OUTDIR=.\bin
+ARCH=x86
 !ENDIF
 
 CC=cl
@@ -12,7 +14,7 @@ TARGET=sudo.exe
 
 OBJS=$(OUTDIR)\main.obj\
 
-LIBS=user32.lib\
+LIBS=\
 
 CFLAGS=\
     /nologo\
@@ -29,7 +31,7 @@ CFLAGS=\
 LFLAGS=\
     /NOLOGO\
     /DEBUG\
-    /SUBSYSTEM:CONSOLE\
+    /SUBSYSTEM:WINDOWS\
 
 all: clean $(OUTDIR)\$(TARGET)
 
@@ -39,6 +41,9 @@ clean:
 
 $(OUTDIR)\$(TARGET): $(OBJS)
     $(LINKER) $(LFLAGS) $(LIBS) /PDB:"$(@R).pdb" /OUT:"$(OUTDIR)\$(TARGET)" $**
+    MT -nologo -manifest manifest.xml\
+       -identity:"sudo, type=win32, version=1.0.0.0, processorArchitecture=$(ARCH)"\
+       -outputresource:$@;1
 
 .cpp{$(OUTDIR)}.obj:
     $(CC) $(CFLAGS) $<
