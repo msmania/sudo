@@ -14,13 +14,18 @@ HANDLE g_hChildStd_OUT_Wr = NULL;
 
 HANDLE g_hInputFile = NULL;
 
-void CreateChildProcess(void);
+void CreateChildProcess(LPCWSTR CommandString);
 void WriteToPipe(void);
 void ReadFromPipe(void);
 void ErrorExit(PTSTR);
 
 int _tmain(int argc, TCHAR *argv[])
 {
+    LPCWSTR CommandLineForChild = GetCommandLine();
+    CommandLineForChild += wcslen(argv[0]);
+    while (*CommandLineForChild == L' ')
+        ++CommandLineForChild;
+
    SECURITY_ATTRIBUTES saAttr;
 
    printf("\n->Start of parent execution.\n");
@@ -53,23 +58,7 @@ int _tmain(int argc, TCHAR *argv[])
 
 // Create the child process.
 
-   CreateChildProcess();
-
-// Get a handle to an input file for the parent.
-// This example assumes a plain text file and uses string output to verify data flow.
-
-    if (argc >= 2) {
-        g_hInputFile = CreateFile(
-           argv[1],
-           GENERIC_READ,
-           0,
-           NULL,
-           OPEN_EXISTING,
-           FILE_ATTRIBUTE_READONLY,
-           NULL);
-        if ( g_hInputFile == INVALID_HANDLE_VALUE )
-          ErrorExit(TEXT("CreateFile"));
-    }
+   CreateChildProcess(CommandLineForChild);
 
 // Write to the pipe that is the standard input for a child process.
 // Data is written to the pipe's buffers, so it is not necessary to wait
@@ -91,13 +80,17 @@ int _tmain(int argc, TCHAR *argv[])
    return 0;
 }
 
-void CreateChildProcess()
+void CreateChildProcess(LPCWSTR CommandString)
 // Create a child process that uses the previously created pipes for STDIN and STDOUT.
 {
-   TCHAR szCmdline[]=TEXT("ipconfig");
+   WCHAR CommandStringCopy[MAX_PATH];
    PROCESS_INFORMATION piProcInfo;
    STARTUPINFO siStartInfo;
    BOOL bSuccess = FALSE;
+
+    if (FAILED(StringCbCopy(CommandStringCopy, sizeof(CommandStringCopy), CommandString))) {
+        ErrorExit(TEXT("StringCbCopy"));
+    }
 
 // Set up members of the PROCESS_INFORMATION structure.
 
@@ -116,7 +109,7 @@ void CreateChildProcess()
 // Create the child process.
 
    bSuccess = CreateProcess(NULL,
-      szCmdline,     // command line
+      CommandStringCopy,     // command line
       NULL,          // process security attributes
       NULL,          // primary thread security attributes
       TRUE,          // handles are inherited
