@@ -58,20 +58,18 @@ int _tmain(int argc, TCHAR *argv[])
 // Get a handle to an input file for the parent.
 // This example assumes a plain text file and uses string output to verify data flow.
 
-   if (argc == 1)
-      ErrorExit(TEXT("Please specify an input file.\n"));
-
-   g_hInputFile = CreateFile(
-       argv[1],
-       GENERIC_READ,
-       0,
-       NULL,
-       OPEN_EXISTING,
-       FILE_ATTRIBUTE_READONLY,
-       NULL);
-
-   if ( g_hInputFile == INVALID_HANDLE_VALUE )
-      ErrorExit(TEXT("CreateFile"));
+    if (argc >= 2) {
+        g_hInputFile = CreateFile(
+           argv[1],
+           GENERIC_READ,
+           0,
+           NULL,
+           OPEN_EXISTING,
+           FILE_ATTRIBUTE_READONLY,
+           NULL);
+        if ( g_hInputFile == INVALID_HANDLE_VALUE )
+          ErrorExit(TEXT("CreateFile"));
+    }
 
 // Write to the pipe that is the standard input for a child process.
 // Data is written to the pipe's buffers, so it is not necessary to wait
@@ -96,7 +94,7 @@ int _tmain(int argc, TCHAR *argv[])
 void CreateChildProcess()
 // Create a child process that uses the previously created pipes for STDIN and STDOUT.
 {
-   TCHAR szCmdline[]=TEXT("child");
+   TCHAR szCmdline[]=TEXT("ipconfig");
    PROCESS_INFORMATION piProcInfo;
    STARTUPINFO siStartInfo;
    BOOL bSuccess = FALSE;
@@ -133,6 +131,8 @@ void CreateChildProcess()
       ErrorExit(TEXT("CreateProcess"));
    else
    {
+      WaitForSingleObject(piProcInfo.hProcess, INFINITE);
+
       // Close handles to the child process and its primary thread.
       // Some applications might keep these handles to monitor the status
       // of the child process, for example.
@@ -151,14 +151,16 @@ void WriteToPipe(void)
    CHAR chBuf[BUFSIZE];
    BOOL bSuccess = FALSE;
 
-   for (;;)
-   {
-      bSuccess = ReadFile(g_hInputFile, chBuf, BUFSIZE, &dwRead, NULL);
-      if ( ! bSuccess || dwRead == 0 ) break;
+    if (g_hInputFile != NULL) {
+        for (;;)
+        {
+          bSuccess = ReadFile(g_hInputFile, chBuf, BUFSIZE, &dwRead, NULL);
+          if ( ! bSuccess || dwRead == 0 ) break;
 
-      bSuccess = WriteFile(g_hChildStd_IN_Wr, chBuf, dwRead, &dwWritten, NULL);
-      if ( ! bSuccess ) break;
-   }
+          bSuccess = WriteFile(g_hChildStd_IN_Wr, chBuf, dwRead, &dwWritten, NULL);
+          if ( ! bSuccess ) break;
+        }
+    }
 
 // Close the pipe handle so the child process stops reading.
 
@@ -172,13 +174,16 @@ void ReadFromPipe(void)
 // and write to the parent process's pipe for STDOUT.
 // Stop when there is no more data.
 {
-   DWORD dwRead, dwWritten;
+   DWORD dwRead, dwWritten, TotalBytesAvailable;
    CHAR chBuf[BUFSIZE];
    BOOL bSuccess = FALSE;
    HANDLE hParentStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
 
    for (;;)
    {
+      bSuccess = PeekNamedPipe(g_hChildStd_OUT_Rd, nullptr, 0, nullptr, &TotalBytesAvailable, nullptr);
+      if (!bSuccess || !TotalBytesAvailable) break;
+
       bSuccess = ReadFile( g_hChildStd_OUT_Rd, chBuf, BUFSIZE, &dwRead, NULL);
       if( ! bSuccess || dwRead == 0 ) break;
 
