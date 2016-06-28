@@ -15,6 +15,9 @@ TARGET=sudo.exe
 OBJS=$(OUTDIR)\main.obj\
 
 LIBS=\
+!IF "$(USE_USER32)"=="1"
+     user32.lib\
+!ENDIF
 
 CFLAGS=\
     /nologo\
@@ -24,6 +27,9 @@ CFLAGS=\
     /Fd"$(OUTDIR)\\"\
     /DUNICODE\
     /D_UNICODE\
+!IF "$(USE_USER32)"=="1"
+    /DUSE_USER32\
+!ENDIF
     /O2\
     /EHsc\
     /W4\
