@@ -2,9 +2,12 @@
 
 #include <windows.h>
 #include <strsafe.h>
+#include <string>
+#include <map>
 
 #define MAX_CONSOLE_BUFFER 4096
-#define CHILD_PROCESS_EXECUTION_TIMEOUT 5000
+#define CHILD_PROCESS_EXECUTION_TIMEOUT_DEFAULT 5
+#define CHILD_PROCESS_EXECUTION_TIMEOUT_MAX 60
 
 class CLog {
 private:
@@ -145,7 +148,8 @@ public:
 bool CreateChildProcess(LPCWSTR CommandString,
                         HANDLE ChildStdin,
                         HANDLE ChildStdout,
-                        HANDLE ChildStderr) {
+                        HANDLE ChildStderr,
+                        DWORD TimeoutInSec) {
     bool Ret = false;
     WCHAR CommandStringCopy[MAX_PATH];
 
@@ -162,8 +166,9 @@ bool CreateChildProcess(LPCWSTR CommandString,
         si.dwFlags |= STARTF_USESTDHANDLES;
 
         // Create the child process.
+        Log.Info(L"Spawning a process (Timeout = %d sec.)\n", TimeoutInSec);
         if (CreateProcess(nullptr, CommandStringCopy, nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, CHILD_PROCESS_EXECUTION_TIMEOUT);
+            WaitForSingleObject(pi.hProcess, TimeoutInSec * 1000);
 
             // Close handles to the child process and its primary thread.
             CloseHandle(pi.hThread);
@@ -213,7 +218,249 @@ bool ReadFromPipe(HANDLE ChildStdout) {
     return TotalBytesAvailable == 0;
 }
 
+class CCommandOptions {
+private:
+    enum CharType {
+        Whitespace,
+        Prefix,
+        EOS,
+        Other,
+    };
+    enum SupportedOption {
+        empty,
+        timeout,
+        showhelp,
+    };
+
+    static std::map<std::wstring, SupportedOption> SupportedOptions;
+
+    static CharType GetCharType(wchar_t c) {
+        CharType t = Other;
+        switch(c) {
+            case L' ': t = Whitespace; break;
+            case L'/': t = Prefix; break;
+            case L'\0': t = EOS; break;
+            default: t = Other; break;
+        }
+        return t;
+    }
+
+    class Extract {
+    private:
+        PWCHAR Start;
+        PWCHAR End;
+        WCHAR OriginalChar;
+    public:
+        Extract(PWCHAR start, PWCHAR end) : Start(start), End(end) {
+            OriginalChar = *End;
+            *End = L'\0';
+        }
+        ~Extract() {
+            *End = OriginalChar;
+        }
+        LPCWSTR str() {return Start;}
+    };
+
+    // isKey=true:  return true means we're good to go to the next state
+    // isKey=false: return true means the value was processed correctly
+    bool Push(bool isKey, LPCWSTR s) {
+        static SupportedOption pushedKey = empty;
+        bool Ret = false;
+        if (isKey) {
+            std::map<std::wstring, SupportedOption>::iterator it = SupportedOptions.find(s);
+            if (it != SupportedOptions.end()) {
+                pushedKey = it->second;
+                switch(pushedKey) {
+                case showhelp:
+                    _ShowHelp = true;
+                    Ret = true;
+                    break;
+                case timeout:
+                    break;
+                default:
+                    _Invalid = true;
+                    break;
+                }
+            }
+            else {
+                _Invalid = true;
+            }
+        }
+        else {
+            DWORD dw;
+            switch(pushedKey) {
+            case timeout:
+                dw = _wtoi(s);
+                if (dw > 0) {
+                    _Timeout = min(dw, CHILD_PROCESS_EXECUTION_TIMEOUT_MAX);
+                    Ret = true;
+                }
+                else {
+                    _Invalid = true;
+                }
+                break;
+            default:
+                Ret = false;
+                break;
+            }
+            pushedKey = empty;
+        }
+        return Ret;
+    }
+
+public:
+    bool _Invalid;
+    bool _ShowHelp;
+    DWORD _Timeout;
+    PWSTR _Cmdline;
+
+    static void Init() {
+        SupportedOptions.insert(std::pair<std::wstring, SupportedOption>(L"/t", timeout));
+        SupportedOptions.insert(std::pair<std::wstring, SupportedOption>(L"/?", showhelp));
+    }
+
+    CCommandOptions(PWSTR CmdLine)
+        : _Invalid(true),
+          _ShowHelp(false),
+          _Timeout(CHILD_PROCESS_EXECUTION_TIMEOUT_DEFAULT),
+          _Cmdline(nullptr) {
+        PWCHAR p = CmdLine;
+        PWCHAR anchor = nullptr;
+        enum State {Start, Key, Value, Finish} s = Start;
+        bool FindValue = false;
+
+        while (s != Finish) {
+            CharType t = GetCharType(*p);
+            if (s == Start && t == Whitespace) {
+                ++p;
+            }
+            else if (s == Start && t == Prefix) {
+                anchor = p;
+                s = Key;
+                ++p;
+            }
+            else if (s == Start && t == EOS) {
+                if (FindValue) {
+                    _Invalid = true;
+                }
+                else {
+                    _Invalid = false;
+                }
+                _Cmdline = p;
+                s = Finish;
+            }
+            else if (s == Start && t == Other) {
+                if (FindValue) {
+                    anchor = p;
+                    s = Value;
+                    ++p;
+                }
+                else {
+                    _Invalid = false;
+                    _Cmdline = p;
+                    s = Finish;
+                }
+            }
+            else if (s == Key && t == Whitespace) {
+                Extract e(anchor, p);
+                if (Push(/*isKey*/true, e.str())) {
+                    FindValue = false;
+                }
+                else {
+                    FindValue = true; // Find a value in next iteration
+                }
+                s = Start;
+                ++p;
+            }
+            else if (s == Key && t == Prefix) {
+                ++p;
+            }
+            else if (s == Key && t == EOS) {
+                Extract e(anchor, p);
+                if (Push(/*isKey*/true, e.str())) {
+                    _Invalid = false;
+                }
+                else {
+                    _Invalid = true;
+                }
+                _Cmdline = p;
+                s = Finish;
+            }
+            else if (s == Key && t == Other) {
+                ++p;
+            }
+            else if (s == Value && t == Whitespace) {
+                Extract e(anchor, p);
+                if (Push(/*isKey*/false, e.str())) {
+                    s = Start;
+                    FindValue = false;
+                    ++p;
+                }
+                else {
+                    _Cmdline = anchor;
+                    s = Finish;
+                }
+            }
+            else if (s == Value && t == Prefix) {
+                ++p;
+            }
+            else if (s == Value && t == EOS) {
+                Extract e(anchor, p);
+                if (Push(/*isKey*/false, e.str())) {
+                    _Cmdline = p;
+                }
+                else {
+                    _Cmdline = anchor;
+                }
+                s = Finish;
+            }
+            else if (s == Value && t == Other) {
+                ++p;
+            }
+        }
+    }
+};
+
+std::map<std::wstring, CCommandOptions::SupportedOption> CCommandOptions::SupportedOptions;
+
+void Test_CCommandOptions() {
+    WCHAR TestStrings[][64] = {
+        L"/t 10 ipconfig /all",
+        L"/t 10  /? \"C:\\Program Files\\Internet Explorer\\iexplore.exe\"",
+        L"/t  10  //a    //? 10 cmd /c echo hello",
+        L"//t 10 b //a ipconfig /all",
+        L"    /t 10 cmd /c echo hello",
+        L"abc /t 10 cmd /c echo hello",
+        L"",
+        L"  ",
+        L"/",
+        L"/  ",
+        L"/t",
+        L"/?",
+        L"/? a",
+        L"/t a",
+        L"/a ",
+        L"  /a",
+        L"  //a  ",
+        L"////",
+        L"////  ",
+    };
+    for (auto &s : TestStrings) {
+        Log.Info(L"\n[%s]\n", s);
+        CCommandOptions opt(s);
+        if (!opt._Invalid) {
+            Log.Info(L"timeout = %d, showhelp = %c, Command = [%s]\n",
+                opt._Timeout,
+                opt._ShowHelp ? L'T' : L'F',
+                opt._Cmdline);
+        }
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int) {
+    CCommandOptions::Init();
+
+    CCommandOptions Opt(pCmdLine);
     CPipe SharedStdout, SharedStdin;
 
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
@@ -225,6 +472,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int) {
 
     Log.Init();
     Log.Info(L"\n[sudo] START\n");
+
+#ifdef _TEST
+    Test_CCommandOptions();
+    goto Exit;
+#endif
+
+    if (Opt._Invalid || Opt._ShowHelp) {
+        if (Opt._Invalid)
+            Log.Info(L"sudo - invalid arguments\n\n");
+        else
+            Log.Info(L"sudo - execute an elevated command\n\n");
+        Log.Info(
+            L"usage: sudo [/?]\n"
+            L"usage: sudo [/t timeout] cmd [arguments]\n\n"
+            L"Options:\n"
+            L"  /?    display help message and exit\n"
+            L"  /t    specify a timeout in seconds to wait for a child process to end\n"
+        );
+        goto Exit;
+    }
 
     // Create a pipe for the child process's STDOUT.
     // Ensure the read handle to the pipe for STDOUT is not inherited.
@@ -240,10 +507,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR pCmdLine, int) {
     }
 
     // Create the child process.
-    if (!CreateChildProcess(pCmdLine,
+    if (!CreateChildProcess(Opt._Cmdline,
                             SharedStdin.R(),
                             SharedStdout.W(),
-                            SharedStdout.W())) {
+                            SharedStdout.W(),
+                            Opt._Timeout)) {
         Log.Error(L"Failed to launch a child process\n");
         goto Exit;
     }
